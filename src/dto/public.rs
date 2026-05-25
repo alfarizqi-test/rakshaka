@@ -34,3 +34,16 @@ pub struct PaginatedPublicReports {
     pub total: u64,
     pub total_pages: u64,
 }
+
+/// Public-safe detail response — includes updated_at for the detail page,
+/// still omits user_id and any private/internal fields.
+#[derive(Debug, Serialize)]
+pub struct PublicReportDetailResponse {
+    pub id: String,
+    pub title: String,
+    pub description: String,
+    pub category: String,
+    pub created_at: Option<String>,
+    pub updated_at: Option<String>,
+    pub images: Vec<PublicImageResponse>,
+}

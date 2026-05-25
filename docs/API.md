@@ -14,6 +14,8 @@
 - [Auth API](#auth-api)
 - [Report API](#report-api)
 - [Public Report API](#public-report-api)
+  - [GET /reports/public](#get-reportspublic)
+  - [GET /reports/public/:id](#get-reportspublicid)
 - [Link Checker API](#link-checker-api)
 - [Error Responses](#error-responses)
 
@@ -588,6 +590,90 @@ console.log(json.data.data); // array of reports
 
 ---
 
+### GET /reports/public/:id
+
+Ambil detail satu laporan berdasarkan ID. Tidak ada autentikasi yang diperlukan.
+
+**Authorization:** ❌ Tidak diperlukan (public)
+
+**Path Parameter:**
+
+| Parameter | Type | Description |
+|---|---|---|
+| `id` | string (UUID) | ID laporan yang ingin diambil |
+
+**Response `200 OK`:**
+
+```json
+{
+  "success": true,
+  "message": "Public report retrieved",
+  "data": {
+    "id": "550e8400-e29b-41d4-a716-446655440000",
+    "title": "Phishing link menyamar sebagai BCA",
+    "description": "Link palsu tersebar menargetkan nasabah BCA melalui WhatsApp. Pengguna diminta memasukkan PIN ATM di halaman palsu.",
+    "category": "phishing",
+    "created_at": "2026-05-25 20:00:00",
+    "updated_at": "2026-05-25 20:10:00",
+    "images": [
+      {
+        "id": "img-uuid-1",
+        "image_url": "https://storage.example.com/phishing-screenshot.jpg"
+      }
+    ]
+  }
+}
+```
+
+**Response `404 Not Found`:**
+
+```json
+{
+  "success": false,
+  "message": "Report not found"
+}
+```
+
+**Field yang ditampilkan:**
+
+| Field | Type | Keterangan |
+|---|---|---|
+| `id` | string (UUID) | ID laporan |
+| `title` | string | Judul laporan |
+| `description` | string | Deskripsi lengkap |
+| `category` | string | `scam` \| `phishing` \| `judol` |
+| `created_at` | string (datetime) | Waktu dibuat |
+| `updated_at` | string (datetime) | Waktu terakhir diupdate |
+| `images` | array | Maks. 3 gambar per laporan |
+
+**Field yang TIDAK ditampilkan** (sengaja disembunyikan):
+- `user_id` — tidak bisa trace laporan ke pemilik
+- email, password, atau data user apapun
+
+**cURL Example:**
+
+```bash
+curl http://localhost:3000/reports/public/550e8400-e29b-41d4-a716-446655440000
+```
+
+**JavaScript (fetch) Example:**
+
+```javascript
+const id = '550e8400-e29b-41d4-a716-446655440000';
+const res = await fetch(`http://localhost:3000/reports/public/${id}`);
+const json = await res.json();
+
+if (!json.success) {
+  console.error(json.message); // "Report not found"
+} else {
+  console.log(json.data); // report detail object
+}
+```
+
+> **Penggunaan frontend:** Route detail halaman publik (`/reports/:id`) mengambil data dari endpoint ini tanpa perlu login.
+
+---
+
 ## Link Checker API
 
 ### POST /link/check
@@ -729,6 +815,7 @@ The service sends a `POST` request to `LINK_CHECKER_API_URL` with:
 | `POST /auth/register` | ✅ | ✅ | ✅ |
 | `POST /auth/login` | ✅ | ✅ | ✅ |
 | `GET /reports/public` | ✅ | ✅ | ✅ |
+| `GET /reports/public/:id` | ✅ | ✅ | ✅ |
 | `GET /auth/me` | ❌ | ✅ | ✅ |
 | `GET /reports` | ❌ | ✅ (own) | ✅ (all) |
 | `GET /reports/:id` | ❌ | ✅ (own) | ✅ (all) |
