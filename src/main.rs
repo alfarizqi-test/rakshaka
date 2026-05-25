@@ -74,7 +74,10 @@ async fn main() {
         ));
 
     // Public routes — no authentication needed
-    let public = routes::auth::public_routes();
+    let public = Router::new()
+        .merge(routes::auth::public_routes())
+        .merge(routes::public::public_routes());
+
 
     let app = Router::new()
         .merge(protected)

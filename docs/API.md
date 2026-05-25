@@ -13,6 +13,7 @@
 - [Response Format](#response-format)
 - [Auth API](#auth-api)
 - [Report API](#report-api)
+- [Public Report API](#public-report-api)
 - [Link Checker API](#link-checker-api)
 - [Error Responses](#error-responses)
 
@@ -494,6 +495,99 @@ curl -X DELETE http://localhost:3000/reports/report-uuid-here \
 
 ---
 
+## Public Report API
+
+Endpoint ini **tidak membutuhkan autentikasi**. Dirancang untuk homepage, landing page, dan public feed frontend.
+
+### GET /reports/public
+
+Ambil semua laporan terbaru secara publik. Tidak ada data sensitif yang di-expose.
+
+**Authorization:** ❌ Tidak diperlukan (public)
+
+**Query Parameters:**
+
+| Parameter | Type | Default | Max | Description |
+|---|---|---|---|---|
+| `page` | integer | `1` | — | Halaman yang diminta (mulai dari 1) |
+| `per_page` | integer | `10` | `50` | Jumlah item per halaman |
+
+**Response `200 OK`:**
+
+```json
+{
+  "success": true,
+  "message": "Public reports retrieved",
+  "data": {
+    "data": [
+      {
+        "id": "550e8400-e29b-41d4-a716-446655440000",
+        "title": "Phishing link menyamar sebagai BCA",
+        "description": "Link palsu tersebar menargetkan nasabah BCA melalui WhatsApp...",
+        "category": "phishing",
+        "created_at": "2026-05-25 20:00:00",
+        "images": [
+          {
+            "id": "img-uuid-1",
+            "image_url": "https://storage.example.com/phishing-screenshot.jpg"
+          }
+        ]
+      },
+      {
+        "id": "661f9511-f30c-52e5-b827-557766551111",
+        "title": "Situs judi online ilegal muncul di iklan",
+        "description": "Situs judol ini beriklan di platform media sosial tanpa izin...",
+        "category": "judol",
+        "created_at": "2026-05-25 18:30:00",
+        "images": []
+      }
+    ],
+    "page": 1,
+    "per_page": 10,
+    "total": 42,
+    "total_pages": 5
+  }
+}
+```
+
+**Field yang ditampilkan:**
+
+| Field | Type | Keterangan |
+|---|---|---|
+| `id` | string (UUID) | ID laporan |
+| `title` | string | Judul laporan |
+| `description` | string | Deskripsi lengkap |
+| `category` | string | `scam` \| `phishing` \| `judol` |
+| `created_at` | string (datetime) | Waktu dibuat |
+| `images` | array | Maks. 3 gambar per laporan |
+
+**Field yang TIDAK ditampilkan** (sengaja disembunyikan):
+- `user_id` — tidak bisa trace laporan ke pemilik
+- `updated_at` — tidak relevan untuk tampilan publik
+- email, password, atau data user apapun
+
+**cURL Example:**
+
+```bash
+# Halaman pertama (default)
+curl http://localhost:3000/reports/public
+
+# Halaman 2, 5 item per halaman
+curl "http://localhost:3000/reports/public?page=2&per_page=5"
+```
+
+**JavaScript (fetch) Example:**
+
+```javascript
+const res = await fetch('http://localhost:3000/reports/public?page=1&per_page=10');
+const json = await res.json();
+console.log(json.data.data); // array of reports
+```
+
+> **Catatan:** Data diurutkan dari terbaru ke terlama (`ORDER BY created_at DESC`).
+
+---
+
 ## Link Checker API
 
 ### POST /link/check
@@ -634,6 +728,7 @@ The service sends a `POST` request to `LINK_CHECKER_API_URL` with:
 |---|---|---|---|
 | `POST /auth/register` | ✅ | ✅ | ✅ |
 | `POST /auth/login` | ✅ | ✅ | ✅ |
+| `GET /reports/public` | ✅ | ✅ | ✅ |
 | `GET /auth/me` | ❌ | ✅ | ✅ |
 | `GET /reports` | ❌ | ✅ (own) | ✅ (all) |
 | `GET /reports/:id` | ❌ | ✅ (own) | ✅ (all) |
@@ -689,11 +784,13 @@ src/
 ├── routes/          # Route definitions (grouped by feature)
 │   ├── auth.rs
 │   ├── reports.rs
-│   └── link.rs
+│   ├── link.rs
+│   └── public.rs    # ← GET /reports/public (no auth)
 ├── handlers/        # Request handlers (business logic per endpoint)
 │   ├── auth.rs
 │   ├── reports.rs
-│   └── link.rs
+│   ├── link.rs
+│   └── public.rs    # ← list_public_reports handler
 ├── models/          # Database row structs (sqlx::FromRow)
 │   ├── user.rs
 │   └── report.rs
@@ -705,7 +802,8 @@ src/
 ├── dto/             # Data Transfer Objects (request/response shapes)
 │   ├── auth.rs
 │   ├── report.rs
-│   └── link.rs
+│   ├── link.rs
+│   └── public.rs    # ← PublicReportResponse, PaginatedPublicReports
 └── utils/           # Shared utilities
     ├── response.rs  # Consistent JSON response helpers
     ├── jwt.rs       # JWT generation & verification
