@@ -18,6 +18,27 @@ impl LinkCheckerService {
         Self { client, api_key, api_url }
     }
 
+    /// Fungsi bantuan untuk mengambil konten website terlebih dahulu
+    async fn fetch_website_content(&self, url: &str) -> String {
+        match self.client.get(url).send().await {
+            Ok(response) => {
+                if response.status().is_success() {
+                    match response.text().await {
+                        Ok(text) => {
+                            // Ambil maksimal 5000 karakter pertama agar tidak memberatkan request ke Gemini
+                            let max_len = std::cmp::min(text.len(), 5000);
+                            text[..max_len].to_string()
+                        },
+                        Err(_) => "Error: Failed to read website body.".to_string()
+                    }
+                } else {
+                    format!("Error: Website returned HTTP status code {}", response.status())
+                }
+            },
+            Err(e) => format!("Error: Failed to fetch website. Reason: {}", e)
+        }
+    }
+
     /// Call the Gemini API and parse its response into a flat analysis object.
     /// Returns a JSON value with at minimum: { status, score, reason }.
     pub async fn check_url(&self, url: &str) -> Result<Value, LinkCheckerError> {
@@ -25,17 +46,23 @@ impl LinkCheckerService {
             return Err(LinkCheckerError::NotConfigured);
         }
 
+        // 1. Ambil konten website terlebih dahulu dari URL (Scraping dasar)
+        let website_content = self.fetch_website_content(url).await;
+
+        // 2. Gabungkan URL dan konten web ke dalam prompt untuk Gemini
         let prompt = format!(
             "You are a cybersecurity URL analysis engine. \
-            Analyze the following URL for threats such as phishing, scam, malware, judol (illegal gambling), or other malicious activity. \
+            Analyze the following URL and its website HTML content for threats such as phishing, scam, malware, judol (illegal gambling), or other malicious activity. \
             \n\n\
+            URL TO ANALYZE: {}\n\n\
+            WEBSITE CONTENT PREVIEW (First 5000 chars):\n\
+            {}\n\n\
             CRITICAL RULES:\n\
             1. 'status' MUST be exactly one of these values: \"safe\", \"suspicious\", \"malicious\", or \"judol\".\n\
-            2. 'score' MUST be an integer between 0 and 100. DO NOT use null. If the URL is clean/safe, give it a score of 0.\n\
-            3. 'reason' MUST be a brief string explaining the judgment.\n\
-            4. Output ONLY valid JSON without any markdown formatting or backticks.\n\n\
-            URL: {}",
-            url
+            2. 'score' MUST be an integer between 0 and 100. DO NOT use null. Give 0 ONLY if you are absolutely sure it is safe based on the content.\n\
+            3. 'reason' MUST be a brief string explaining the judgment based on BOTH the URL name and the website content provided.\n\
+            4. Output ONLY valid JSON without any markdown formatting or backticks.\n",
+            url, website_content
         );
 
         let endpoint = format!("{}?key={}", self.api_url, self.api_key);
@@ -85,7 +112,7 @@ impl LinkCheckerService {
             .unwrap_or("")
             .trim();
 
-        // Membersihkan markdown format ```json ... ``` dan teks awalan
+        // 3. Membersihkan markdown format ```json ... ``` dan teks awalan (Anti Error)
         let mut json_str = text;
         if let Some(start) = json_str.find("```json") {
             json_str = &json_str[start + 7..];
