@@ -678,13 +678,13 @@ if (!json.success) {
 
 ### POST /link/check
 
-Analyze a URL for safety using an external link checker service.
+Analisis URL menggunakan **Gemini AI** sebagai engine deteksi ancaman, diperkuat dengan **Community Intelligence** dari database laporan komunitas Rakshaka.
 
-**Authorization:** `Bearer <token>` ✅ Required (must be logged in)
+**Authorization:** `Bearer <token>` ✅ Required (harus login)
 
-**Rate Limiting:** This endpoint calls an external API — handle errors gracefully on the client side.
+---
 
-**Request Body:**
+#### Request Body
 
 ```json
 {
@@ -693,9 +693,51 @@ Analyze a URL for safety using an external link checker service.
 ```
 
 **Validation Rules:**
-- `url`: must be a valid URL format
+- `url`: harus format URL yang valid
+- `url`: tidak boleh mengarah ke IP/host internal/private (SSRF protection)
 
-**Response `200 OK`:**
+---
+
+#### SSRF Protection
+
+Endpoint secara otomatis **memblokir** URL yang mengarah ke:
+
+| Kategori | Contoh |
+|---|---|
+| Loopback | `localhost`, `127.0.0.1`, `::1` |
+| Private IPv4 Class A | `10.0.0.0/8` |
+| Private IPv4 Class B | `172.16.0.0/12` |
+| Private IPv4 Class C | `192.168.0.0/16` |
+| Link-local / Cloud metadata | `169.254.169.254`, `100.64.0.0/10` |
+| Internal TLD | `*.local`, `*.internal`, `*.lan`, `*.corp` |
+| Unspecified | `0.0.0.0` |
+
+Jika URL diblokir, server **tidak** melakukan request ke AI/external API dan langsung mengembalikan `422`.
+
+---
+
+#### Analysis Flow
+
+```
+User submit URL
+     ↓
+Validasi format URL
+     ↓
+SSRF check (block private/internal host)
+     ↓
+Community Intelligence — query tabel reports
+  (cari domain/URL yang pernah dilaporkan)
+     ↓
+Gemini AI analysis
+     ↓
+Merge: community signal + AI verdict
+     ↓
+Return final response
+```
+
+---
+
+#### Response `200 OK`
 
 ```json
 {
@@ -703,38 +745,96 @@ Analyze a URL for safety using an external link checker service.
   "message": "Link analyzed successfully",
   "data": {
     "url": "https://suspicious-website.com",
-    "status": "safe",
-    "score": 92
+    "status": "suspicious",
+    "score": 78,
+    "reason": "Domain closely mimics a known banking site and uses deceptive redirect patterns.",
+    "community": {
+      "report_count": 3,
+      "categories": ["phishing", "scam"]
+    }
   }
 }
 ```
 
-**Possible `status` values** (from external API):
+**Response Fields:**
 
-| Status | Description |
+| Field | Type | Keterangan |
+|---|---|---|
+| `url` | string | URL yang dianalisis |
+| `status` | string | Hasil analisis: `safe` \| `suspicious` \| `malicious` \| `judol` \| `unknown` |
+| `score` | integer \| null | Risk score 0–100 dari AI (null jika AI tidak tersedia) |
+| `reason` | string | Penjelasan singkat dari AI |
+| `community.report_count` | integer | Jumlah laporan komunitas yang menyebut domain ini |
+| `community.categories` | array | Kategori laporan komunitas (`scam`, `phishing`, `judol`) |
+
+**Possible `status` values:**
+
+| Status | Keterangan |
 |---|---|
-| `safe` | URL appears safe |
-| `suspicious` | URL has suspicious characteristics |
-| `malicious` | URL is known malicious |
-| `unknown` | Could not determine safety |
+| `safe` | URL tampak aman |
+| `suspicious` | URL memiliki karakteristik mencurigakan |
+| `malicious` | URL diketahui berbahaya |
+| `judol` | URL terkait judi online ilegal |
+| `unknown` | Tidak dapat ditentukan (AI timeout/error) |
 
-**cURL Example:**
+> **Catatan:** Jika `community.report_count > 0` dan AI menilai `safe`/`unknown`, sistem secara otomatis menaikkan status ke `suspicious` berdasarkan signal komunitas.
+
+---
+
+#### Response `422` — SSRF Blocked
+
+```json
+{
+  "success": false,
+  "message": "URL targets a private, internal, or reserved address and cannot be analyzed"
+}
+```
+
+#### Response `200` — AI tidak tersedia (degraded mode)
+
+```json
+{
+  "success": true,
+  "message": "Link analyzed successfully",
+  "data": {
+    "url": "https://example.com",
+    "status": "unknown",
+    "score": null,
+    "reason": "AI analysis timed out",
+    "community": {
+      "report_count": 0,
+      "categories": []
+    }
+  }
+}
+```
+
+> Endpoint **tidak pernah mengembalikan 502** — error AI ditangani secara graceful dan tetap mengembalikan 200 dengan `status: unknown`.
+
+---
+
+#### cURL Example
 
 ```bash
+# Analisis URL normal
 curl -X POST http://localhost:3000/link/check \
   -H "Authorization: Bearer <token>" \
   -H "Content-Type: application/json" \
   -d '{"url": "https://suspicious-website.com"}'
+
+# SSRF attempt — akan ditolak 422
+curl -X POST http://localhost:3000/link/check \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{"url": "http://localhost/admin"}'
 ```
 
-**External API Integration:**  
-The service sends a `POST` request to `LINK_CHECKER_API_URL` with:
-- Header: `X-API-Key: <LINK_CHECKER_API_KEY>`
-- Header: `Authorization: Bearer <LINK_CHECKER_API_KEY>`
-- Body: `{"url": "<url>"}`
-- Timeout: 15 seconds
-
-> **Security:** The API key is **never** exposed in the response.
+**External AI Integration:**
+- Engine: **Google Gemini** (`generateContent` API)
+- Prompt: instruksi analisis cybersecurity dengan output JSON terstruktur
+- Response parsing: unwrap `candidates[0].content.parts[0].text` → parse inner JSON
+- Timeout: 20 detik
+- API key: **tidak pernah di-expose** ke response
 
 ---
 
@@ -750,10 +850,8 @@ The service sends a `POST` request to `LINK_CHECKER_API_URL` with:
 | `403` | Forbidden — insufficient role permissions |
 | `404` | Not Found |
 | `409` | Conflict — duplicate username/email |
-| `422` | Unprocessable Entity — validation failed |
+| `422` | Unprocessable Entity — validation failed atau SSRF blocked |
 | `500` | Internal Server Error |
-| `502` | Bad Gateway — external API error |
-| `504` | Gateway Timeout — external API timeout |
 | `503` | Service Unavailable — link checker not configured |
 
 ### Common Error Examples

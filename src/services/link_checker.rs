@@ -1,19 +1,6 @@
 use reqwest::Client;
-use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
-#[derive(Debug, Serialize)]
-struct ExternalCheckRequest {
-    url: String,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct ExternalCheckResponse {
-    pub status: Option<String>,
-    pub score: Option<i64>,
-    #[serde(flatten)]
-    pub extra: serde_json::Value,
-}
 
 pub struct LinkCheckerService {
     client: Client,
@@ -24,32 +11,43 @@ pub struct LinkCheckerService {
 impl LinkCheckerService {
     pub fn new(api_key: String, api_url: String) -> Self {
         let client = Client::builder()
-            .timeout(Duration::from_secs(15))
+            .timeout(Duration::from_secs(20))
             .build()
             .expect("Failed to build HTTP client");
 
         Self { client, api_key, api_url }
     }
 
+    /// Call the Gemini API and parse its wrapped response into a flat analysis object.
+    /// Returns a JSON value with at minimum: { status, score, reason }.
     pub async fn check_url(&self, url: &str) -> Result<serde_json::Value, LinkCheckerError> {
-        if self.api_url.is_empty() {
+        if self.api_url.is_empty() || self.api_key.is_empty() {
             return Err(LinkCheckerError::NotConfigured);
         }
 
+        let prompt = format!(
+            "You are a cybersecurity URL analysis engine. \
+            Analyze the following URL for threats such as phishing, scam, malware, judol (illegal gambling), or other malicious activity. \
+            Respond ONLY with a valid JSON object (no markdown, no explanation) with exactly these fields:\n\
+            {{\"status\": \"safe\" | \"suspicious\" | \"malicious\" | \"judol\", \"score\": 0-100, \"reason\": \"brief explanation\"}}\n\
+            URL: {}",
+            url
+        );
+
+        let endpoint = format!("{}?key={}", self.api_url, self.api_key);
+
         let response = self
             .client
-            .post(format!("{}?key={}", self.api_url, self.api_key))
-            .header("x-goog-api-key", &self.api_key)
+            .post(&endpoint)
             .header("Content-Type", "application/json")
             .json(&serde_json::json!({
                 "contents": [{
-                    "parts": [{
-                        "text": format!(
-                            "Analyze this URL for phishing, scam, malicious activity, or gambling. Return ONLY JSON with fields: status, score, reason.\nURL: {}",
-                            url
-                        )
-                    }]
-                }]
+                    "parts": [{ "text": prompt }]
+                }],
+                "generationConfig": {
+                    "temperature": 0.1,
+                    "maxOutputTokens": 256
+                }
             }))
             .send()
             .await
@@ -61,17 +59,49 @@ impl LinkCheckerService {
                 }
             })?;
 
-        if !response.status().is_success() {
-            let status = response.status().as_u16();
-            return Err(LinkCheckerError::ApiError(format!("API returned status {}", status)));
+        let http_status = response.status();
+        if !http_status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            tracing::error!("Gemini API error {}: {}", http_status, body);
+            return Err(LinkCheckerError::ApiError(format!(
+                "AI API returned status {}",
+                http_status.as_u16()
+            )));
         }
 
-        let body: serde_json::Value = response
+        // Gemini wraps the model output inside:
+        // candidates[0].content.parts[0].text
+        let raw: serde_json::Value = response
             .json()
             .await
             .map_err(|e| LinkCheckerError::ParseError(e.to_string()))?;
 
-        Ok(body)
+        let text = raw
+            .pointer("/candidates/0/content/parts/0/text")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim()
+            .to_string();
+
+        // Strip optional markdown fences the model might add
+        let clean = text
+            .trim_start_matches("```json")
+            .trim_start_matches("```")
+            .trim_end_matches("```")
+            .trim()
+            .to_string();
+
+        // Parse the inner JSON the model produced
+        let parsed: serde_json::Value = serde_json::from_str(&clean).unwrap_or_else(|_| {
+            tracing::warn!("Gemini returned non-JSON text: {}", clean);
+            serde_json::json!({
+                "status": "unknown",
+                "score": null,
+                "reason": clean
+            })
+        });
+
+        Ok(parsed)
     }
 }
 
