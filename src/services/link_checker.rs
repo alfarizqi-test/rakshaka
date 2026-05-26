@@ -1,5 +1,5 @@
 use std::time::Duration;
-use reqwest::Client; // Memperbaiki typo 'use use_reqwest::Client'
+use reqwest::Client;
 use serde_json::Value;
 
 pub struct LinkCheckerService {
@@ -32,7 +32,8 @@ impl LinkCheckerService {
             CRITICAL RULES:\n\
             1. 'status' MUST be exactly one of these values: \"safe\", \"suspicious\", \"malicious\", or \"judol\".\n\
             2. 'score' MUST be an integer between 0 and 100. DO NOT use null. If the URL is clean/safe, give it a score of 0.\n\
-            3. 'reason' MUST be a brief string explaining the judgment.\n\n\
+            3. 'reason' MUST be a brief string explaining the judgment.\n\
+            4. Output ONLY valid JSON without any markdown formatting or backticks.\n\n\
             URL: {}",
             url
         );
@@ -82,10 +83,25 @@ impl LinkCheckerService {
             .pointer("/candidates/0/content/parts/0/text")
             .and_then(|v| v.as_str())
             .unwrap_or("")
-            .trim()
-            .to_string();
+            .trim();
 
-        let parsed: Value = serde_json::from_str(&text).unwrap_or_else(|_| {
+        // Membersihkan markdown format ```json ... ``` dan teks awalan
+        let mut json_str = text;
+        if let Some(start) = json_str.find("```json") {
+            json_str = &json_str[start + 7..];
+            if let Some(end) = json_str.rfind("```") {
+                json_str = &json_str[..end];
+            }
+        } else if let Some(start) = json_str.find("```") {
+            json_str = &json_str[start + 3..];
+            if let Some(end) = json_str.rfind("```") {
+                json_str = &json_str[..end];
+            }
+        }
+        
+        let cleaned_json_str = json_str.trim();
+
+        let parsed: Value = serde_json::from_str(cleaned_json_str).unwrap_or_else(|_| {
             tracing::warn!("Gemini returned non-JSON text unexpectedly: {}", text);
             serde_json::json!({
                 "status": "unknown",
