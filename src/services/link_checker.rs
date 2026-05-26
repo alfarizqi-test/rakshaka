@@ -10,22 +10,22 @@ pub struct LinkCheckerService {
 
 impl LinkCheckerService {
     pub fn new(api_key: String, api_url: String) -> Self {
+        // PERBAIKAN 1: Menyamar sebagai Browser Google Chrome agar tidak diblokir oleh website
         let client = Client::builder()
             .timeout(Duration::from_secs(20))
+            .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
             .build()
             .expect("Failed to build HTTP client");
 
         Self { client, api_key, api_url }
     }
 
-    /// Fungsi bantuan untuk mengambil konten website terlebih dahulu
     async fn fetch_website_content(&self, url: &str) -> String {
         match self.client.get(url).send().await {
             Ok(response) => {
                 if response.status().is_success() {
                     match response.text().await {
                         Ok(text) => {
-                            // Ambil maksimal 5000 karakter pertama agar tidak memberatkan request ke Gemini
                             let max_len = std::cmp::min(text.len(), 5000);
                             text[..max_len].to_string()
                         },
@@ -39,17 +39,13 @@ impl LinkCheckerService {
         }
     }
 
-    /// Call the Gemini API and parse its response into a flat analysis object.
-    /// Returns a JSON value with at minimum: { status, score, reason }.
     pub async fn check_url(&self, url: &str) -> Result<Value, LinkCheckerError> {
         if self.api_url.is_empty() || self.api_key.is_empty() {
             return Err(LinkCheckerError::NotConfigured);
         }
 
-        // 1. Ambil konten website terlebih dahulu dari URL (Scraping dasar)
         let website_content = self.fetch_website_content(url).await;
 
-        // 2. Gabungkan URL dan konten web ke dalam prompt untuk Gemini
         let prompt = format!(
             "You are a cybersecurity URL analysis engine. \
             Analyze the following URL and its website HTML content for threats such as phishing, scam, malware, judol (illegal gambling), or other malicious activity. \
@@ -61,7 +57,7 @@ impl LinkCheckerService {
             1. 'status' MUST be exactly one of these values: \"safe\", \"suspicious\", \"malicious\", or \"judol\".\n\
             2. 'score' MUST be an integer between 0 and 100. DO NOT use null. Give 0 ONLY if you are absolutely sure it is safe based on the content.\n\
             3. 'reason' MUST be a brief string explaining the judgment based on BOTH the URL name and the website content provided.\n\
-            4. Output ONLY valid JSON without any markdown formatting or backticks.\n",
+            4. Output ONLY valid JSON without any markdown formatting or backticks. Start your response directly with {{ and end with }}.\n",
             url, website_content
         );
 
@@ -77,7 +73,7 @@ impl LinkCheckerService {
                 }],
                 "generationConfig": {
                     "temperature": 0.0,
-                    "maxOutputTokens": 256,
+                    "maxOutputTokens": 1024, // PERBAIKAN 2: Dinaikkan agar balasan JSON tidak terpotong
                     "responseMimeType": "application/json"
                 }
             }))
@@ -106,29 +102,23 @@ impl LinkCheckerService {
             .await
             .map_err(|e| LinkCheckerError::ParseError(e.to_string()))?;
 
-        let text = raw
+        let mut text = raw
             .pointer("/candidates/0/content/parts/0/text")
             .and_then(|v| v.as_str())
             .unwrap_or("")
-            .trim();
+            .trim()
+            .to_string();
 
-        // 3. Membersihkan markdown format ```json ... ``` dan teks awalan (Anti Error)
-        let mut json_str = text;
-        if let Some(start) = json_str.find("```json") {
-            json_str = &json_str[start + 7..];
-            if let Some(end) = json_str.rfind("```") {
-                json_str = &json_str[..end];
-            }
-        } else if let Some(start) = json_str.find("```") {
-            json_str = &json_str[start + 3..];
-            if let Some(end) = json_str.rfind("```") {
-                json_str = &json_str[..end];
+        // PERBAIKAN 3: Ekstraksi JSON yang jauh lebih aman (Mencari tanda kurung kurawal pertama { dan terakhir })
+        if let Some(start_idx) = text.find('{') {
+            if let Some(end_idx) = text.rfind('}') {
+                if start_idx <= end_idx {
+                    text = text[start_idx..=end_idx].to_string();
+                }
             }
         }
-        
-        let cleaned_json_str = json_str.trim();
 
-        let parsed: Value = serde_json::from_str(cleaned_json_str).unwrap_or_else(|_| {
+        let parsed: Value = serde_json::from_str(&text).unwrap_or_else(|_| {
             tracing::warn!("Gemini returned non-JSON text unexpectedly: {}", text);
             serde_json::json!({
                 "status": "unknown",
