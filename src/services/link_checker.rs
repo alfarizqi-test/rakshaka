@@ -38,10 +38,19 @@ impl LinkCheckerService {
 
         let response = self
             .client
-            .post(&self.api_url)
-            .header("X-API-Key", &self.api_key)
-            .header("Authorization", format!("Bearer {}", self.api_key))
-            .json(&ExternalCheckRequest { url: url.to_string() })
+            .post(format!("{}?key={}", self.api_url, self.api_key))
+            .header("x-goog-api-key", &self.api_key)
+            .header("Content-Type", "application/json")
+            .json(&serde_json::json!({
+                "contents": [{
+                    "parts": [{
+                        "text": format!(
+                            "Analyze this URL for phishing, scam, malicious activity, or gambling. Return ONLY JSON with fields: status, score, reason.\nURL: {}",
+                            url
+                        )
+                    }]
+                }]
+            }))
             .send()
             .await
             .map_err(|e| {
